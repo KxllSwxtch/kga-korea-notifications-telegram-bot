@@ -1,4 +1,4 @@
-import re
+import json
 import time
 import telebot
 import os
@@ -10,6 +10,12 @@ from telebot.storage import StateMemoryStorage
 from dotenv import load_dotenv
 from datetime import datetime
 from translations import translations
+
+# Путь до файла
+REQUESTS_FILE = "requests.json"
+
+# Глобальный словарь всех запросов пользователей
+user_requests = {}
 
 COLOR_TRANSLATIONS = {
     "검정색": "Чёрный",
@@ -38,6 +44,47 @@ state_storage = StateMemoryStorage()
 bot = telebot.TeleBot(BOT_TOKEN, state_storage=state_storage)
 user_search_data = {}
 
+def translate_phrase(phrase):
+    words = phrase.split()
+    translated_words = [translations.get(word, word) for word in words]
+    return " ".join(translated_words)
+
+def load_requests():
+    global user_requests
+    if os.path.exists(REQUESTS_FILE):
+        try:
+            with open(REQUESTS_FILE, "r", encoding="utf-8") as f:
+                user_requests = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Не удалось загрузить запросы: {e}")
+            user_requests = {}
+    else:
+        user_requests = {}
+
+def save_requests(new_data):
+    global user_requests
+    try:
+        if os.path.exists(REQUESTS_FILE):
+            with open(REQUESTS_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                existing_data = json.loads(content) if content else {}
+        else:
+            existing_data = {}
+
+        for user_id, new_requests in new_data.items():
+            # Убедимся, что user_id — строка
+            user_id_str = str(user_id)
+            if user_id_str not in existing_data:
+                existing_data[user_id_str] = []
+            existing_data[user_id_str].extend(new_requests)
+
+        user_requests = existing_data  # Обновляем глобальные данные
+
+        with open(REQUESTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_requests, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Ошибка сохранения запросов: {e}")
+
 # FSM: Состояния формы
 class CarForm(StatesGroup):
     brand = State()
@@ -57,6 +104,7 @@ def get_manufacturers():
         response = requests.get(url, headers=headers)
         data = response.json()
         manufacturers = data.get("iNav", {}).get("Nodes", [])[2].get("Facets", [])[0].get("Refinements", {}).get("Nodes", [])[0].get("Facets", [])
+        manufacturers.sort(key=lambda x: x.get("Metadata", {}).get("EngName", [""])[0])
         return manufacturers
     except Exception as e:
         print("Ошибка при получении марок:", e)
@@ -127,11 +175,19 @@ def get_trims_by_generation(manufacturer, model_group, model):
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
+    # Главные кнопки
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🔍 Найти авто", callback_data="search_car"),
-        types.InlineKeyboardButton("🧮 Рассчитать по ссылке", url="https://t.me/kgaexportbot"),
+        
     )
+    markup.add(types.InlineKeyboardButton("🧮 Рассчитать по ссылке", url="https://t.me/kgaexportbot"),)
+    markup.add(
+        types.InlineKeyboardButton("📋 Список моих запросов", callback_data="my_requests")
+    )
+    markup.add(types.InlineKeyboardButton("🧹 Удалить все запросы", callback_data="delete_all_requests"))
+
+    # Дополнительные кнопки
     markup.add(
         types.InlineKeyboardButton("📸 Instagram", url="https://www.instagram.com/kgakorea/"),
         types.InlineKeyboardButton("🎵 TikTok", url="https://www.tiktok.com/@kga_korea")
@@ -139,6 +195,7 @@ def start_handler(message):
     markup.add(
         types.InlineKeyboardButton("🌐 Сайт компании", url="https://kga-korea.com/")
     )
+
     welcome_text = (
         "👋 Добро пожаловать бот от *KGA Korea*!\n\n"
         "С помощью этого бота вы можете:\n"
@@ -153,6 +210,56 @@ def start_handler(message):
         parse_mode="Markdown",
         reply_markup=markup
     )
+
+@bot.callback_query_handler(func=lambda call: call.data == "my_requests")
+def handle_my_requests(call):
+    user_id = str(call.from_user.id)
+    requests_list = user_requests.get(user_id, [])
+
+    if not requests_list:
+        bot.answer_callback_query(call.id, "У вас пока нет сохранённых запросов.")
+        return
+
+    for idx, req in enumerate(requests_list, 1):
+        text = (
+            f"📌 *Запрос #{idx}:*\n"
+            f"{req['manufacturer']} / {req['model_group']} / {req['model']} / {req['trim']}\n"
+            f"Год: {req['year']}, Пробег: {req['mileage_from']}–{req['mileage_to']} км\n"
+            f"Цвет: {req['color']}"
+        )
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"🗑 Удалить запрос #{idx}", callback_data=f"delete_request_{idx - 1}"))
+        bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_request_"))
+def handle_delete_request(call):
+    user_id = str(call.from_user.id)
+    index = int(call.data.split("_")[2])
+    if user_id not in user_requests or index >= len(user_requests[user_id]):
+        bot.answer_callback_query(call.id, "⚠️ Запрос не найден.")
+        return
+
+    removed = user_requests[user_id].pop(index)
+    save_requests(user_requests)
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="✅ Запрос успешно удалён."
+    )
+
+    print(f"🗑 Удалён запрос пользователя {user_id}: {removed}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "delete_all_requests")
+def handle_delete_all_requests(call):
+    user_id = str(call.from_user.id)
+    if user_id in user_requests:
+        user_requests[user_id] = []
+        save_requests(user_requests)
+        bot.send_message(call.message.chat.id, "✅ Все ваши запросы успешно удалены.")
+    else:
+        bot.send_message(call.message.chat.id, "⚠️ У вас нет сохранённых запросов.")
 
 @bot.callback_query_handler(func=lambda call: call.data == "search_car")
 def handle_search_car(call):
@@ -169,10 +276,9 @@ def handle_search_car(call):
         display_text = f"{eng_name}"
         markup.add(types.InlineKeyboardButton(display_text, callback_data=callback_data))
 
-    bot.edit_message_text(
+    bot.send_message(
+        call.message.chat.id,
         "Выбери марку автомобиля:",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
         reply_markup=markup
     )
 
@@ -237,7 +343,9 @@ def handle_model_selection(call):
         period = f"({start_date} — {end_date})" if start_date else ""
 
         callback_data = f"generation_{gen_eng}_{gen_kr}"
-        display_text = f"{gen_kr} {gen_eng} {period}".strip()
+        translated_gen_kr = translate_phrase(gen_kr)
+        translated_gen_eng = translate_phrase(gen_eng)
+        display_text = f"{translated_gen_kr} {translated_gen_eng} {period}".strip()
         markup.add(types.InlineKeyboardButton(display_text, callback_data=callback_data))
 
     bot.edit_message_text(
@@ -299,7 +407,8 @@ def handle_generation_selection(call):
         trim_kr = item.get("DisplayValue", "Без названия")
         trim_eng = item.get("Metadata", {}).get("EngName", [""])[0]
         callback_data = f"trim_{trim_eng}_{trim_kr}"
-        display_text = translate_trim(trim_eng or trim_kr)
+        translated_text = translations.get(trim_eng, translations.get(trim_kr, trim_eng or trim_kr))
+        display_text = translate_trim(translated_text)
         markup.add(types.InlineKeyboardButton(display_text, callback_data=callback_data))
 
     bot.edit_message_text(
@@ -476,11 +585,32 @@ def handle_color_selection(call):
         call.message.chat.id,
         "🔍 Начинаем поиск автомобилей по заданным параметрам. Это может занять некоторое время..."
     )
-    # Кнопка для добавления нового автомобиля в поиск
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("➕ Добавить новый автомобиль в поиск", callback_data="search_car"))
-    bot.send_message(call.message.chat.id, "Хотите добавить ещё один автомобиль в поиск?", reply_markup=markup)
+    # Кнопки после завершения добавления авто
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("➕ Добавить новый автомобиль в поиск", callback_data="search_car")
+    )
+    markup.add(
+        types.InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="start")
+    )
+    bot.send_message(call.message.chat.id, "Хотите добавить ещё один автомобиль в поиск или вернуться в главное меню?", reply_markup=markup)
 
+    if user_id not in user_requests:
+        user_requests[user_id] = []
+    
+    user_requests[user_id].append({
+        "manufacturer": manufacturer,
+        "model_group": model_group,
+        "model": model,
+        "trim": trim,
+        "year": year,
+        "mileage_from": mileage_from,
+        "mileage_to": mileage_to,
+        "color": selected_color_kr
+    })
+    
+    save_requests(user_requests)
+    
     import threading
     threading.Thread(
         target=check_for_new_cars,
@@ -512,17 +642,6 @@ def handle_model(message):
 checked_ids = set()
 
 def build_encar_url(manufacturer, model_group, model, trim, year, mileage_from, mileage_to, color):
-    print("DEBUG PARAMS:")
-    print("RAW INPUTS:", manufacturer, model_group, model, trim)
-    print("manufacturer:", f"[{manufacturer}]")
-    print("model_group:", f"[{model_group}]")
-    print("model:", f"[{model}]")
-    print("trim:", f"[{trim}]")
-    print("year:", year)
-    print("mileage_from:", mileage_from)
-    print("mileage_to:", mileage_to)
-    print("color:", f"[{color}]")
-
     if not all([manufacturer.strip(), model_group.strip(), model.strip(), trim.strip()]):
         print("❌ Не переданы необходимые параметры для построения URL")
         return ""
@@ -597,7 +716,9 @@ def check_for_new_cars(chat_id, manufacturer, model_group, model, trim, year_fro
                 formatted_price = format_number(price * 10000)
                 
                 text = f"✅ Новое поступление по вашему запросу!\n\n<b>{name}</b> {year} г.\nПробег: {formatted_mileage} км\nЦена: ₩{formatted_price}" + extra_text
-                bot.send_message(chat_id, text, parse_mode="HTML")
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("➕ Добавить новый автомобиль в поиск", callback_data="search_car"))
+                bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
             time.sleep(300)
         except Exception as e:
@@ -606,18 +727,14 @@ def check_for_new_cars(chat_id, manufacturer, model_group, model, trim, year_fro
 
 # Запуск бота
 if __name__ == "__main__":
-    print("Bot is running...")
+    from datetime import datetime
     
-    # url = build_encar_url(
-    #     manufacturer="현대",
-    #     model_group="쏘나타",
-    #     model="쏘나타 디 엣지(DN8_)",
-    #     trim="가솔린 1600cc",
-    #     year=2023,
-    #     mileage_from=1,
-    #     mileage_to=200000,
-    #     color="검정색"
-    # )
-    # print(url)
-
+    print("=" * 50)
+    print(f"🚀 [KGA Korea Bot] Запуск бота — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("📦 Загрузка сохранённых запросов пользователей...")
+    load_requests()
+    print("✅ Запросы успешно загружены.")
+    print("🤖 Бот запущен и ожидает команды...")
+    print("=" * 50)
     bot.infinity_polling()
+
