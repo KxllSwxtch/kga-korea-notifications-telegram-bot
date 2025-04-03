@@ -211,6 +211,10 @@ def start_handler(message):
         reply_markup=markup
     )
 
+@bot.callback_query_handler(func=lambda call: call.data == "start")
+def handle_start_callback(call):
+    start_handler(call.message)
+
 @bot.callback_query_handler(func=lambda call: call.data == "my_requests")
 def handle_my_requests(call):
     user_id = str(call.from_user.id)
