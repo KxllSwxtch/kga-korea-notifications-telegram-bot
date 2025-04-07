@@ -127,7 +127,7 @@ class CarForm(StatesGroup):
 
 
 def get_manufacturers():
-    url = "https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%bc%EB%B0%98._.CarType.A.)&inav=%7CMetadata%7CSort"
+    url = "https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%BC%EB%B0%98._.CarType.A.)&inav=%7CMetadata%7CSort"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
@@ -148,7 +148,7 @@ def get_manufacturers():
 
 
 def get_models_by_brand(manufacturer):
-    url = f"https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%bc%EB%B0%98._.(C.CarType.A._.Manufacturer.{manufacturer}.))&inav=%7CMetadata%7CSort"
+    url = f"https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%BC%EB%B0%98._.(C.CarType.A._.Manufacturer.{manufacturer}.))&inav=%7CMetadata%7CSort"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
@@ -177,7 +177,7 @@ def get_models_by_brand(manufacturer):
 
 
 def get_generations_by_model(manufacturer, model_group):
-    url = f"https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%bc%EB%B0%98._.(C.CarType.A._.(C.Manufacturer.{manufacturer}._.ModelGroup.{model_group}.)))&inav=%7CMetadata%7CSort"
+    url = f"https://api.encar.com/search/car/list/general?count=true&q=(And.Hidden.N._.SellType.%EC%9D%BC%EB%B0%98._.(C.CarType.A._.(C.Manufacturer.{manufacturer}._.ModelGroup.{model_group}.)))&inav=%7CMetadata%7CSort"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
@@ -522,16 +522,6 @@ def handle_model_selection(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("generation_"))
 def handle_generation_selection(call):
-    def translate_trim(text):
-        return (
-            text.replace("가솔린+전기", "Гибрид")
-            .replace("가솔린", "Бензин")
-            .replace("디젤", "Дизель")
-            .replace("전기", "Электро")
-            .replace("2WD", "2WD")
-            .replace("4WD", "4WD")
-        )
-
     _, generation_eng, generation_kr = call.data.split("_", 2)
     message_text = call.message.text
 
@@ -544,62 +534,95 @@ def handle_generation_selection(call):
 
     brand_eng, brand_kr = brand_line.replace("Марка:", "").strip().split(" (")
     brand_kr = brand_kr.rstrip(")")
-    model_eng, model_kr = model_line.replace("Модель:", "").strip().split(" (")
+    model_part = model_line.replace("Модель:", "").strip()
+    if " (" in model_part:
+        model_eng, model_kr = model_part.split(" (")
+        model_kr = model_kr.rstrip(")")
+    else:
+        model_eng = model_part
+        model_kr = ""
 
-    model_kr = model_kr.rstrip(")")
-
+    # Получаем поколения для определения дат
     generations = get_generations_by_model(brand_kr, model_kr)
     selected_generation = next(
         (
             g
             for g in generations
             if g.get("DisplayValue") == generation_kr
-            or g.get("Metadata", {}).get("EngName", [""])[0] == generation_eng
+            or generation_kr in g.get("DisplayValue", "")
+            or generation_eng in g.get("Metadata", {}).get("EngName", [""])[0]
         ),
         None,
     )
+
     if not selected_generation:
         bot.answer_callback_query(call.id, "Не удалось определить поколение.")
         return
 
+    # Получаем даты начала и окончания поколения
     start_raw = str(
         selected_generation.get("Metadata", {}).get("ModelStartDate", [""])[0]
     )
-    end_raw = str(selected_generation.get("Metadata", {}).get("ModelEndDate", [""])[0])
+    end_raw = str(
+        selected_generation.get("Metadata", {}).get("ModelEndDate", [""])[0] or ""
+    )
 
+    current_year = datetime.now().year
+
+    # Определяем начальный и конечный год
+    raw_start_year = int(start_raw[:4]) if len(start_raw) == 6 else current_year - 10
+
+    # Используем точный год начала поколения без смещения
+    start_year = raw_start_year
+
+    if end_raw and end_raw.isdigit():
+        end_year = int(end_raw[:4])
+    else:
+        end_year = current_year
+
+    # --- DEBUGGING --- Выводим полученные даты и рассчитанные годы
+    print(f"⚙️ DEBUG [handle_generation_selection] - Raw start_raw: '{start_raw}'")
+    print(f"⚙️ DEBUG [handle_generation_selection] - Raw end_raw: '{end_raw}'")
+    print(
+        f"⚙️ DEBUG [handle_generation_selection] - Original API start_year: {raw_start_year}"
+    )
+    print(f"⚙️ DEBUG [handle_generation_selection] - Used year_from: {start_year}")
+    print(f"⚙️ DEBUG [handle_generation_selection] - Calculated year_to: {end_year}")
+    # --- END DEBUGGING ---
+
+    # Получаем комплектации
     trims = get_trims_by_generation(brand_kr, model_kr, generation_kr)
     if not trims:
         bot.answer_callback_query(call.id, "Не удалось загрузить комплектации.")
         return
 
-    current_year = datetime.now().year
-    current_month = datetime.now().month
-
-    start_year = (
-        int(start_raw[:4])
-        if start_raw and start_raw.isdigit() and len(start_raw) == 6
-        else current_year
-    )
-    if end_raw and end_raw.isdigit() and len(end_raw) == 6:
-        end_year = int(end_raw[:4])
-    else:
-        end_year = current_year
-
     markup = types.InlineKeyboardMarkup(row_width=2)
     for item in trims:
-        trim_kr = item.get("DisplayValue", "Без названия")
+        trim_kr = item.get("DisplayValue", "")
         trim_eng = item.get("Metadata", {}).get("EngName", [""])[0]
         callback_data = f"trim_{trim_eng}_{trim_kr}"
-        translated_text = translations.get(
-            trim_eng, translations.get(trim_kr, trim_eng or trim_kr)
-        )
-        display_text = translate_trim(translated_text)
+        display_text = trim_kr
         markup.add(
             types.InlineKeyboardButton(display_text, callback_data=callback_data)
         )
 
+    user_id = call.from_user.id
+    if user_id not in user_search_data:
+        user_search_data[user_id] = {}
+
+    # Сохраняем данные о модели и годах
+    user_search_data[user_id].update(
+        {
+            "manufacturer": brand_kr.strip(),
+            "model_group": model_kr.strip(),
+            "model": generation_kr.strip(),
+            "year_from": start_year,
+            "year_to": end_year,
+        }
+    )
+
     bot.edit_message_text(
-        f"Марка: {brand_eng.strip()} ({brand_kr})\nМодель: {model_eng} ({model_kr})\nПоколение: {generation_eng} ({generation_kr})\nТеперь выбери комплектацию:",
+        f"Марка: {brand_eng.strip()} ({brand_kr})\nМодель: {model_eng} ({model_kr})\nПоколение: {generation_eng} ({generation_kr})\nВыберите комплектацию:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=markup,
@@ -611,10 +634,41 @@ def handle_trim_selection(call):
     parts = call.data.split("_", 2)
     trim_eng = parts[1]
     trim_kr = parts[2] if len(parts) > 2 else parts[1]
-    if not trim_eng.strip():
-        print("⚠️ trim_eng пустой, возможно, ошибка в callback_data или split")
-    message_text = call.message.text
 
+    print(f"✅ DEBUG trim selection - raw data:")
+    print(f"trim_eng: {trim_eng}")
+    print(f"trim_kr: {trim_kr}")
+
+    user_id = call.from_user.id
+    if user_id not in user_search_data:
+        user_search_data[user_id] = {}
+
+    # Получаем годы начала и конца поколения из сохраненных данных
+    start_year = user_search_data[user_id].get("year_from", datetime.now().year - 10)
+    end_year = user_search_data[user_id].get("year_to", datetime.now().year)
+
+    # --- DEBUGGING --- Добавим вывод для проверки значений годов
+    print(
+        f"⚙️ DEBUG [handle_trim_selection] - User {user_id} - Retrieved year_from: {start_year}"
+    )
+    print(
+        f"⚙️ DEBUG [handle_trim_selection] - User {user_id} - Retrieved year_to: {end_year}"
+    )
+    # --- END DEBUGGING ---
+
+    # Сохраняем trim
+    user_search_data[user_id]["trim"] = trim_kr.strip()
+
+    print(f"✅ DEBUG user_search_data after trim selection:")
+    print(json.dumps(user_search_data[user_id], indent=2, ensure_ascii=False))
+
+    year_markup = types.InlineKeyboardMarkup(row_width=4)
+    for y in range(start_year, end_year + 1):
+        year_markup.add(
+            types.InlineKeyboardButton(str(y), callback_data=f"year_from_{y}")
+        )
+
+    message_text = call.message.text
     brand_line = next(
         (line for line in message_text.split("\n") if "Марка:" in line), ""
     )
@@ -634,73 +688,65 @@ def handle_trim_selection(call):
     else:
         model_eng = model_part
         model_kr = ""
+
     generation_part = generation_line.replace("Поколение:", "").strip()
     if "(" in generation_part and ")" in generation_part:
         parts = generation_part.rsplit("(", 1)
         generation_eng = parts[0].strip()
         generation_kr = parts[1].replace(")", "").strip()
-        generation_kr = translations.get(generation_kr, generation_kr)
     else:
         generation_eng = generation_part
         generation_kr = ""
 
-    generations = get_generations_by_model(brand_kr, model_kr)
-    selected_generation = next(
-        (
-            g
-            for g in generations
-            if g.get("DisplayValue") == generation_kr
-            or generation_kr in g.get("DisplayValue", "")
-            or generation_eng in g.get("Metadata", {}).get("EngName", [""])[0]
-        ),
-        None,
+    bot.edit_message_text(
+        f"Марка: {brand_eng.strip()} ({brand_kr})\nМодель: {model_eng} ({model_kr})\nПоколение: {generation_eng} ({generation_kr})\nКомплектация: {trim_eng} ({trim_kr})\nВыберите начальный год выпуска:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=year_markup,
     )
-    if not selected_generation:
-        bot.answer_callback_query(call.id, "Не удалось определить поколение.")
-        return
 
-    start_raw = str(
-        selected_generation.get("Metadata", {}).get("ModelStartDate", [""])[0]
-    )
-    end_raw = str(
-        selected_generation.get("Metadata", {}).get("ModelEndDate", [""])[0] or ""
-    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("year_from_"))
+def handle_year_from_selection(call):
+    year_from = int(call.data.split("_")[2])
+    user_id = call.from_user.id
+    if user_id not in user_search_data:
+        user_search_data[user_id] = {}
+
+    # Сохраняем год начала, сохраняя остальные данные
+    user_search_data[user_id].update({"year_from": year_from})
+
+    print(f"✅ DEBUG user_search_data after year_from selection:")
+    print(json.dumps(user_search_data[user_id], indent=2, ensure_ascii=False))
 
     current_year = datetime.now().year
-    current_month = datetime.now().month
-
-    if end_raw and end_raw.isdigit():
-        end_year = int(end_raw[:4])
-    else:
-        end_year = current_year
-
-    end_date_value = (
-        end_raw if len(end_raw) > 0 else f"{current_year}{current_month:02d}"
-    )
-
-    start_year = int(start_raw[:4]) if len(start_raw) == 6 else current_year
-    end_year = int(end_date_value[:4])
-
     year_markup = types.InlineKeyboardMarkup(row_width=4)
-    for y in range(start_year, end_year + 1):
-        year_markup.add(types.InlineKeyboardButton(str(y), callback_data=f"year_{y}"))
+    for y in range(year_from, current_year + 2):  # +2 для учета будущего года
+        year_markup.add(
+            types.InlineKeyboardButton(str(y), callback_data=f"year_to_{year_from}_{y}")
+        )
 
+    bot.edit_message_text(
+        f"Начальный год: {year_from}\nТеперь выберите конечный год:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=year_markup,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("year_to_"))
+def handle_year_to_selection(call):
+    year_from = int(call.data.split("_")[2])
+    year_to = int(call.data.split("_")[3])
     user_id = call.from_user.id
-    print(f"✅ DEBUG trim_eng: {trim_eng}")
-    print(f"✅ DEBUG trim_kr: {trim_kr}")
     if user_id not in user_search_data:
         user_search_data[user_id] = {}
-    user_search_data[user_id]["manufacturer"] = brand_kr.strip()
-    user_search_data[user_id]["model_group"] = model_kr.strip()
-    user_search_data[user_id]["model"] = generation_kr.strip()
-    user_search_data[user_id]["trim"] = trim_eng.strip() or trim_kr.strip()
-    bot.send_message(
-        call.message.chat.id,
-        f"Марка: {brand_eng.strip()} ({brand_kr})\nМодель: {model_eng} ({model_kr})\nПоколение: {generation_eng} ({generation_kr})\nКомплектация: {trim_eng} ({trim_kr})",
-    )
-    bot.send_message(
-        call.message.chat.id, "Выбери год выпуска автомобиля:", reply_markup=year_markup
-    )
+
+    # Сохраняем год окончания, сохраняя остальные данные
+    user_search_data[user_id].update({"year_to": year_to})
+
+    print(f"✅ DEBUG user_search_data after year_to selection:")
+    print(json.dumps(user_search_data[user_id], indent=2, ensure_ascii=False))
 
     mileage_markup = types.InlineKeyboardMarkup(row_width=4)
     for value in range(0, 200001, 10000):
@@ -710,28 +756,10 @@ def handle_trim_selection(call):
             )
         )
 
-    # Removed mileage selection from trim handler.
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("year_"))
-def handle_year_selection(call):
-    selected_year = int(call.data.split("_")[1])
-    user_id = call.from_user.id
-    if user_id not in user_search_data:
-        user_search_data[user_id] = {}
-    user_search_data[user_id]["year"] = selected_year  # 👈 сохраняем год
-
-    mileage_markup = types.InlineKeyboardMarkup(row_width=4)
-    for value in range(0, 200001, 10000):
-        mileage_markup.add(
-            types.InlineKeyboardButton(
-                f"{value} км", callback_data=f"mileage_from_{value}"
-            )
-        )
-    message_text = call.message.text
-    bot.send_message(
-        call.message.chat.id,
-        f"{message_text}\nГод выпуска: {selected_year}\nТеперь выбери минимальный пробег:",
+    bot.edit_message_text(
+        f"Диапазон годов: {year_from}-{year_to}\nТеперь выберите минимальный пробег:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
         reply_markup=mileage_markup,
     )
 
@@ -739,6 +767,14 @@ def handle_year_selection(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("mileage_from_"))
 def handle_mileage_from(call):
     mileage_from = int(call.data.split("_")[2])
+
+    print(f"✅ DEBUG user_search_data before mileage_from selection:")
+    print(
+        json.dumps(
+            user_search_data.get(call.from_user.id, {}), indent=2, ensure_ascii=False
+        )
+    )
+
     mileage_markup = types.InlineKeyboardMarkup(row_width=4)
     for value in range(mileage_from + 10000, 200001, 10000):
         mileage_markup.add(
@@ -749,7 +785,7 @@ def handle_mileage_from(call):
 
     bot.send_message(
         call.message.chat.id,
-        f"Минимальный пробег: {mileage_from} км\nТеперь выбери максимальный пробег:",
+        f"Минимальный пробег: {mileage_from} км\nТеперь выберите максимальный пробег:",
         reply_markup=mileage_markup,
     )
 
@@ -759,13 +795,20 @@ def handle_mileage_to(call):
     mileage_from = int(call.data.split("_")[2])
     mileage_to = int(call.data.split("_")[3])
 
+    print(f"✅ DEBUG user_search_data before mileage_to selection:")
+    print(
+        json.dumps(
+            user_search_data.get(call.from_user.id, {}), indent=2, ensure_ascii=False
+        )
+    )
+
     markup = types.InlineKeyboardMarkup(row_width=2)
     for kr, ru in COLOR_TRANSLATIONS.items():
         markup.add(types.InlineKeyboardButton(ru, callback_data=f"color_{kr}"))
 
     bot.send_message(
         call.message.chat.id,
-        f"Пробег: от {mileage_from} км до {mileage_to} км\nТеперь выбери цвет автомобиля:",
+        f"Пробег: от {mileage_from} км до {mileage_to} км\nТеперь выберите цвет автомобиля:",
         reply_markup=markup,
     )
 
@@ -784,10 +827,31 @@ def handle_color_selection(call):
     user_data = user_search_data.get(user_id, {})
     print(f"✅ DEBUG user_data before color selection: {user_data}")
 
-    manufacturer = user_data.get("manufacturer", "")
-    model_group = user_data.get("model_group", "")
-    model = user_data.get("model", "")
-    trim = user_data.get("trim", "")
+    # Проверяем наличие всех необходимых данных
+    required_fields = [
+        "manufacturer",
+        "model_group",
+        "model",
+        "trim",
+        "year_from",
+        "year_to",
+    ]
+    missing_fields = [field for field in required_fields if field not in user_data]
+
+    if missing_fields:
+        print(f"❌ Отсутствуют необходимые поля: {missing_fields}")
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ Произошла ошибка: не все данные были сохранены. Пожалуйста, начните поиск заново.",
+        )
+        return
+
+    manufacturer = user_data["manufacturer"]
+    model_group = user_data["model_group"]
+    model = user_data["model"]
+    trim = user_data["trim"]
+    year_from = user_data["year_from"]
+    year_to = user_data["year_to"]
 
     mileage_line = next(
         (line for line in message_text.split("\n") if "Пробег:" in line), ""
@@ -795,13 +859,16 @@ def handle_color_selection(call):
     mileage_from = int(mileage_line.split("от")[1].split("км")[0].strip())
     mileage_to = int(mileage_line.split("до")[1].split("км")[0].strip())
 
-    year = user_data.get("year", datetime.now().year)
-
-    print("⚙️ Данные переданы в check_for_new_cars:")
-    print(f"manufacturer: {manufacturer.strip()}")
-    print(f"model_group: {model_group.strip()}")
-    print(f"model: {model.strip()}")
-    print(f"trim: {trim.strip()}")
+    print("⚙️ Данные для поиска:")
+    print(f"manufacturer: {manufacturer}")
+    print(f"model_group: {model_group}")
+    print(f"model: {model}")
+    print(f"trim: {trim}")
+    print(f"year_from: {year_from}")
+    print(f"year_to: {year_to}")
+    print(f"color: {selected_color_kr}")
+    print(f"mileage_from: {mileage_from}")
+    print(f"mileage_to: {mileage_to}")
 
     bot.send_message(
         call.message.chat.id,
@@ -832,7 +899,8 @@ def handle_color_selection(call):
             "model_group": model_group,
             "model": model,
             "trim": trim,
-            "year": year,
+            "year_from": year_from,
+            "year_to": year_to,
             "mileage_from": mileage_from,
             "mileage_to": mileage_to,
             "color": selected_color_kr,
@@ -847,11 +915,12 @@ def handle_color_selection(call):
         target=check_for_new_cars,
         args=(
             call.message.chat.id,
-            manufacturer.strip(),  # manufacturer
-            model_group.strip(),  # model_group
-            model.strip(),  # model
-            trim.strip(),  # trim
-            year,
+            manufacturer.strip(),
+            model_group.strip(),
+            model.strip(),
+            trim.strip(),
+            year_from,
+            year_to,
             mileage_from,
             mileage_to,
             selected_color_kr.strip(),
@@ -877,7 +946,15 @@ checked_ids = set()
 
 
 def build_encar_url(
-    manufacturer, model_group, model, trim, year, mileage_from, mileage_to, color
+    manufacturer,
+    model_group,
+    model,
+    trim,
+    year_from,
+    year_to,
+    mileage_from,
+    mileage_to,
+    color,
 ):
     if not all(
         [manufacturer.strip(), model_group.strip(), model.strip(), trim.strip()]
@@ -885,26 +962,41 @@ def build_encar_url(
         print("❌ Не переданы необходимые параметры для построения URL")
         return ""
 
-    # Строим основной фильтр без цвета и пробега
-    core_query = (
-        f"(And.Hidden.N._.SellType.일반._."
+    # Convert years to format YYYYMM
+    year_from_formatted = f"{year_from}00"
+    year_to_formatted = f"{year_to}99"
+
+    # Подготавливаем имя модели - добавляем '_' после кода модели
+    if "(" in model and ")" in model:
+        base_name, code_part = model.rsplit("(", 1)
+        code = code_part.rstrip(")")
+        # Убираем пробелы перед скобкой для соответствия формату API
+        base_name = base_name.rstrip()
+        model_formatted = f"{base_name}({code}_)"
+    else:
+        model_formatted = model
+
+    # Используем urllib.parse.quote только для отдельных значений,
+    # оставляя структурные элементы (скобки, точки) как есть
+    manufacturer_encoded = urllib.parse.quote(manufacturer)
+    model_group_encoded = urllib.parse.quote(model_group)
+    model_formatted_encoded = urllib.parse.quote(model_formatted)
+    trim_encoded = urllib.parse.quote(trim)
+    color_encoded = urllib.parse.quote(color)
+    sell_type_encoded = urllib.parse.quote("일반")
+
+    # Формируем URL точно как в рабочем примере
+    url = (
+        f"https://api-encar.habsidev.com/api/catalog?count=true&q="
+        f"(And.Hidden.N._.SellType.{sell_type_encoded}._.Color.{color_encoded}._."
         f"(C.CarType.A._."
-        f"(C.Manufacturer.{manufacturer}._."
-        f"(C.ModelGroup.{model_group}._."
-        f"(C.Model.{model_group} ({model})._."
-        f"(And.BadgeGroup.{trim}._.YearGroup.{year}.))))))"
+        f"(C.Manufacturer.{manufacturer_encoded}._."
+        f"(C.ModelGroup.{model_group_encoded}._."
+        f"(C.Model.{model_formatted_encoded}._.BadgeGroup.{trim_encoded}.))))_."
+        f"Year.range({year_from_formatted}..{year_to_formatted})._."
+        f"Mileage.range({mileage_from}..{mileage_to}).)"
+        f"&sr=%7CModifiedDate%7C0%7C1"
     )
-
-    # Добавляем фильтры цвета и пробега снаружи
-    mileage_part = (
-        f"Mileage.range({mileage_from}..{mileage_to})"
-        if mileage_from > 0
-        else f"Mileage.range(..{mileage_to})"
-    )
-    extended_query = f"{core_query}_.Color.{color}._.{mileage_part}."
-
-    encoded_query = urllib.parse.quote(extended_query, safe="()_.%")
-    url = f"https://api-encar.habsidev.com/api/catalog?count=true&q={encoded_query}&sr=%7CModifiedDate%7C0%7C1"
 
     print(f"📡 Сформирован URL: {url}")
     return url
@@ -917,6 +1009,7 @@ def check_for_new_cars(
     model,
     trim,
     year_from,
+    year_to,
     mileage_from,
     mileage_to,
     color,
@@ -927,12 +1020,11 @@ def check_for_new_cars(
         model,
         trim,
         year_from,
+        year_to,
         mileage_from,
         mileage_to,
         color,
     )
-
-    print(url)
 
     while True:
         try:

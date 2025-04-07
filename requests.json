@@ -1,3 +1,15 @@
 {
-  "728438182": []
+  "728438182": [
+    {
+      "manufacturer": "현대",
+      "model_group": "그랜저",
+      "model": "그랜저 (GN7)",
+      "trim": "가솔린 2WD",
+      "year_from": 2022,
+      "year_to": 2024,
+      "mileage_from": 0,
+      "mileage_to": 200000,
+      "color": "흰색"
+    }
+  ]
 }
