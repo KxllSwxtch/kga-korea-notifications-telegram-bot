@@ -40,22 +40,6 @@ def save_access():
 
 MANAGER = 604303416  # Только этот пользователь может добавлять других
 
-COLOR_TRANSLATIONS = {
-    "검정색": "Чёрный",
-    "쥐색": "Тёмно-серый",
-    "은색": "Серебристый",
-    "은회색": "Серо-серебристый",
-    "흰색": "Белый",
-    "은하색": "Галактический серый",
-    "명은색": "Светло-серебристый",
-    "갈대색": "Коричневато-серый",
-    "연금색": "Светло-золотистый",
-    "청색": "Синий",
-    "하늘색": "Голубой",
-    "담녹색": "Тёмно-зелёный",
-    "청옥색": "Бирюзовый",
-}
-
 # Загружаем переменные из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -121,7 +105,6 @@ class CarForm(StatesGroup):
     model = State()
     generation = State()
     trim = State()
-    color = State()
     mileage_from = State()
     mileage_to = State()
 
@@ -348,73 +331,132 @@ def handle_start_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "my_requests")
 def handle_my_requests(call):
-    if not is_authorized(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ У вас нет доступа к боту.")
+    user_id = call.from_user.id
+    if not is_authorized(user_id):
+        bot.send_message(call.message.chat.id, "❌ У вас нет доступа к боту.")
         return
 
-    user_id = str(call.from_user.id)
-    requests_list = user_requests.get(user_id, [])
-    load_requests()
-
-    if not requests_list:
-        bot.answer_callback_query(call.id, "У вас пока нет сохранённых запросов.")
-        return
-
-    for idx, req in enumerate(requests_list, 1):
-        text = (
-            f"📌 *Запрос #{idx}:*\n"
-            f"{req['manufacturer']} / {req['model_group']} / {req['model']} / {req['trim']}\n"
-            f"Год: {req['year']}, Пробег: {req['mileage_from']}–{req['mileage_to']} км\n"
-            f"Цвет: {req['color']}"
+    if str(user_id) not in user_requests or not user_requests[str(user_id)]:
+        bot.send_message(
+            call.message.chat.id,
+            "У вас нет сохранённых запросов. Нажмите 'Поиск авто', чтобы добавить.",
         )
+        return
 
-        markup = types.InlineKeyboardMarkup()
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for idx, req in enumerate(user_requests[str(user_id)]):
+        car_name = f"{req['manufacturer']} {req['model']}"
         markup.add(
             types.InlineKeyboardButton(
-                f"🗑 Удалить запрос #{idx}", callback_data=f"delete_request_{idx - 1}"
+                f"❌ {car_name}", callback_data=f"delete_request_{idx}"
             )
         )
-        bot.send_message(
-            call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup
+    markup.add(
+        types.InlineKeyboardButton(
+            "❌ Удалить все запросы", callback_data="delete_all_requests"
         )
+    )
+    markup.add(
+        types.InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="start")
+    )
+
+    text = "📋 Ваши сохранённые запросы на авто:\n\n"
+    for idx, req in enumerate(user_requests[str(user_id)]):
+        text += f"{idx+1}. {req['manufacturer']} {req['model']} {req['trim']}\n"
+        text += f"Годы: {req['year_from']}-{req['year_to']}\n"
+        text += f"Пробег: {req['mileage_from']}-{req['mileage_to']} км\n"
+        text += "---\n"
+
+    bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("delete_request_"))
 def handle_delete_request(call):
-    user_id = str(call.from_user.id)
-    index = int(call.data.split("_")[2])
-    if user_id not in user_requests or index >= len(user_requests[user_id]):
-        bot.answer_callback_query(call.id, "⚠️ Запрос не найден.")
+    if not is_authorized(call.from_user.id):
+        bot.send_message(call.message.chat.id, "❌ У вас нет доступа к боту.")
         return
 
-    removed = user_requests[user_id].pop(index)
+    user_id = str(call.from_user.id)
+    index = int(call.data.split("_")[-1])
 
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="start")
-    )
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text="✅ Запрос успешно удалён.",
-        reply_markup=markup,
-    )
+    if user_id in user_requests and 0 <= index < len(user_requests[user_id]):
+        deleted_req = user_requests[user_id].pop(index)
+        save_requests(user_requests)
 
-    print(f"🗑 Удалён запрос пользователя {user_id}: {removed}")
-    save_requests(user_requests)
-    load_requests()
+        bot.answer_callback_query(call.id, "✅ Запрос удалён.")
+
+        # Обновляем список запросов
+        if not user_requests[user_id]:
+            bot.edit_message_text(
+                "У вас нет сохранённых запросов. Нажмите 'Поиск авто', чтобы добавить.",
+                call.message.chat.id,
+                call.message.message_id,
+            )
+            return
+
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for idx, req in enumerate(user_requests[user_id]):
+            car_name = f"{req['manufacturer']} {req['model']}"
+            markup.add(
+                types.InlineKeyboardButton(
+                    f"❌ {car_name}", callback_data=f"delete_request_{idx}"
+                )
+            )
+        markup.add(
+            types.InlineKeyboardButton(
+                "❌ Удалить все запросы", callback_data="delete_all_requests"
+            )
+        )
+        markup.add(
+            types.InlineKeyboardButton(
+                "🏠 Вернуться в главное меню", callback_data="start"
+            )
+        )
+
+        text = "📋 Ваши сохранённые запросы на авто:\n\n"
+        for idx, req in enumerate(user_requests[user_id]):
+            text += f"{idx+1}. {req['manufacturer']} {req['model']} {req['trim']}\n"
+            text += f"Годы: {req['year_from']}-{req['year_to']}\n"
+            text += f"Пробег: {req['mileage_from']}-{req['mileage_to']} км\n"
+            text += "---\n"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup,
+        )
+    else:
+        bot.answer_callback_query(call.id, "⚠️ Запрос не найден.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "delete_all_requests")
 def handle_delete_all_requests(call):
+    if not is_authorized(call.from_user.id):
+        bot.send_message(call.message.chat.id, "❌ У вас нет доступа к боту.")
+        return
+
     user_id = str(call.from_user.id)
     if user_id in user_requests:
         user_requests[user_id] = []
         save_requests(user_requests)
-        load_requests()
-        bot.send_message(call.message.chat.id, "✅ Все ваши запросы успешно удалены.")
+
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton(
+                "🏠 Вернуться в главное меню", callback_data="start"
+            )
+        )
+
+        bot.edit_message_text(
+            "Все запросы удалены. Нажмите 'Поиск авто', чтобы добавить новые.",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup,
+        )
+        bot.answer_callback_query(call.id, "✅ Все запросы удалены.")
     else:
-        bot.send_message(call.message.chat.id, "⚠️ У вас нет сохранённых запросов.")
+        bot.answer_callback_query(call.id, "⚠️ У вас нет сохранённых запросов.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "search_car")
@@ -802,30 +844,8 @@ def handle_mileage_to(call):
         )
     )
 
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    for kr, ru in COLOR_TRANSLATIONS.items():
-        markup.add(types.InlineKeyboardButton(ru, callback_data=f"color_{kr}"))
-
-    bot.send_message(
-        call.message.chat.id,
-        f"Пробег: от {mileage_from} км до {mileage_to} км\nТеперь выберите цвет автомобиля:",
-        reply_markup=markup,
-    )
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("color_"))
-def handle_color_selection(call):
-    selected_color_kr = call.data.split("_", 1)[1]
-    message_text = call.message.text
-    selected_color_ru = (
-        "Любой"
-        if selected_color_kr == "all"
-        else COLOR_TRANSLATIONS.get(selected_color_kr, "Неизвестно")
-    )
-
     user_id = call.from_user.id
     user_data = user_search_data.get(user_id, {})
-    print(f"✅ DEBUG user_data before color selection: {user_data}")
 
     # Проверяем наличие всех необходимых данных
     required_fields = [
@@ -853,12 +873,6 @@ def handle_color_selection(call):
     year_from = user_data["year_from"]
     year_to = user_data["year_to"]
 
-    mileage_line = next(
-        (line for line in message_text.split("\n") if "Пробег:" in line), ""
-    )
-    mileage_from = int(mileage_line.split("от")[1].split("км")[0].strip())
-    mileage_to = int(mileage_line.split("до")[1].split("км")[0].strip())
-
     print("⚙️ Данные для поиска:")
     print(f"manufacturer: {manufacturer}")
     print(f"model_group: {model_group}")
@@ -866,14 +880,14 @@ def handle_color_selection(call):
     print(f"trim: {trim}")
     print(f"year_from: {year_from}")
     print(f"year_to: {year_to}")
-    print(f"color: {selected_color_kr}")
     print(f"mileage_from: {mileage_from}")
     print(f"mileage_to: {mileage_to}")
 
     bot.send_message(
         call.message.chat.id,
-        "🔍 Начинаем поиск автомобилей по заданным параметрам. Это может занять некоторое время...",
+        f"Пробег: от {mileage_from} км до {mileage_to} км\n🔍 Начинаем поиск автомобилей по заданным параметрам. Это может занять некоторое время...",
     )
+
     # Кнопки после завершения добавления авто
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -903,7 +917,6 @@ def handle_color_selection(call):
             "year_to": year_to,
             "mileage_from": mileage_from,
             "mileage_to": mileage_to,
-            "color": selected_color_kr,
         }
     )
 
@@ -923,7 +936,7 @@ def handle_color_selection(call):
             year_to,
             mileage_from,
             mileage_to,
-            selected_color_kr.strip(),
+            "",  # Пустая строка вместо цвета
         ),
         daemon=True,
     ).start()
@@ -954,7 +967,7 @@ def build_encar_url(
     year_to,
     mileage_from,
     mileage_to,
-    color,
+    color,  # параметр оставляем для совместимости с существующим кодом
 ):
     if not all(
         [manufacturer.strip(), model_group.strip(), model.strip(), trim.strip()]
@@ -982,13 +995,12 @@ def build_encar_url(
     model_group_encoded = urllib.parse.quote(model_group)
     model_formatted_encoded = urllib.parse.quote(model_formatted)
     trim_encoded = urllib.parse.quote(trim)
-    color_encoded = urllib.parse.quote(color)
     sell_type_encoded = urllib.parse.quote("일반")
 
-    # Формируем URL точно как в рабочем примере
+    # Формируем URL точно как в рабочем примере, без указания цвета
     url = (
         f"https://api-encar.habsidev.com/api/catalog?count=true&q="
-        f"(And.Hidden.N._.SellType.{sell_type_encoded}._.Color.{color_encoded}._."
+        f"(And.Hidden.N._.SellType.{sell_type_encoded}._."
         f"(C.CarType.A._."
         f"(C.Manufacturer.{manufacturer_encoded}._."
         f"(C.ModelGroup.{model_group_encoded}._."
