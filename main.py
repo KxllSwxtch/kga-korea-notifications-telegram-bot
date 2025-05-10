@@ -999,7 +999,7 @@ def build_encar_url(
 
     # Формируем URL точно как в рабочем примере, без указания цвета
     url = (
-        f"https://api-encar.habsidev.com/api/catalog?count=true&q="
+        f"https://encar-proxy.habsida.net/api/catalog?count=true&q="
         f"(And.Hidden.N._.SellType.{sell_type_encoded}._."
         f"(C.CarType.A._."
         f"(C.Manufacturer.{manufacturer_encoded}._."
